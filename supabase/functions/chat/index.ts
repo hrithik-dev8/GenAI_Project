@@ -5,6 +5,8 @@
 // 4) Persist user + assistant messages to DB.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { ChatOpenAI } from "npm:@langchain/openai";
+import { SystemMessage, HumanMessage, AIMessage } from "npm:@langchain/core/messages";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -130,7 +132,7 @@ Deno.serve(async (req) => {
       ? `User context: ${profile.gender}, age ${profile.age ?? "?"}, goal ${profile.goal}, activity ${profile.activity_level}, ${profile.hours_per_week}h/wk, diet ${profile.diet_preference}, current weight ${profile.current_weight_kg}kg${profile.goal_weight_kg ? ` -> ${profile.goal_weight_kg}kg` : ""}. Allergies: ${profile.allergies || "none"}.`
       : "User context: not yet onboarded.";
 
-    const system = `You are EvidenceFit Coach, an AI fitness assistant grounded in peer-reviewed sports-science and nutrition research.
+    const systemText = `You are EvidenceFit Coach, an AI fitness assistant grounded in peer-reviewed sports-science and nutrition research.
 
 RULES (non-negotiable):
 - Stay strictly on fitness, training, nutrition, recovery, and exercise-related health topics. Politely refuse anything else.
@@ -146,33 +148,13 @@ EVIDENCE:
 ${evidenceBlock}`;
 
     const messages = [
-      { role: "system", content: system },
-      ...recent.map(m => ({ role: m.role, content: m.content })),
+      new SystemMessage(systemText),
+      ...recent.map((m: any) => m.role === "assistant" ? new AIMessage(m.content) : new HumanMessage(m.content)),
     ];
-
-    const aiRes = await fetch(`${LLM_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${LLM_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: LLM_MODEL, messages, stream: true }),
-    });
-
-    if (!aiRes.ok || !aiRes.body) {
-      const t = await aiRes.text();
-      console.error("ai gateway", aiRes.status, t);
-      if (aiRes.status === 429) return new Response(JSON.stringify({ error: "Rate limit reached, try again shortly." }), { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      if (aiRes.status === 402) return new Response(JSON.stringify({ error: "AI credits exhausted." }), { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      return new Response(JSON.stringify({ error: "AI gateway error" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
 
     const citations = docs.map((d: any) => ({
       id: d.id, title: d.title, authors: d.authors, year: d.year, source: d.source, url: d.url, similarity: d.similarity,
     }));
-
-    // Tee the stream: send to client AND accumulate to persist final assistant message + citations.
-    const reader = aiRes.body.getReader();
-    const decoder = new TextDecoder();
-    let textBuffer = "";
-    let assistantText = "";
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -180,30 +162,32 @@ ${evidenceBlock}`;
         // Prepend a custom event with citations so the client can render them up front.
         controller.enqueue(enc.encode(`event: citations\ndata: ${JSON.stringify(citations)}\n\n`));
 
+        let assistantText = "";
         try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            controller.enqueue(value);
-            textBuffer += decoder.decode(value, { stream: true });
+          const llm = new ChatOpenAI({
+            apiKey: LLM_API_KEY,
+            configuration: { baseURL: LLM_BASE_URL },
+            modelName: LLM_MODEL,
+            maxRetries: 2,
+          });
 
-            let idx: number;
-            while ((idx = textBuffer.indexOf("\n")) !== -1) {
-              let line = textBuffer.slice(0, idx);
-              textBuffer = textBuffer.slice(idx + 1);
-              if (line.endsWith("\r")) line = line.slice(0, -1);
-              if (!line.startsWith("data: ")) continue;
-              const payload = line.slice(6).trim();
-              if (payload === "[DONE]") continue;
-              try {
-                const j = JSON.parse(payload);
-                const piece = j.choices?.[0]?.delta?.content;
-                if (piece) assistantText += piece;
-              } catch { /* incomplete chunk, will be retried next loop */ }
+          const aiStream = await llm.stream(messages);
+          for await (const chunk of aiStream) {
+            const piece = chunk.content as string;
+            if (piece) {
+              assistantText += piece;
+              const payload = {
+                choices: [{ delta: { content: piece }, index: 0 }],
+              };
+              controller.enqueue(enc.encode(`data: ${JSON.stringify(payload)}\n\n`));
             }
           }
-        } catch (e) {
+          controller.enqueue(enc.encode(`data: [DONE]\n\n`));
+        } catch (e: any) {
           console.error("stream error", e);
+          const errorMsg = e.status === 429 ? "Rate limit reached, try again shortly." :
+                           e.status === 402 ? "AI credits exhausted." : "AI gateway error";
+          controller.enqueue(enc.encode(`data: ${JSON.stringify({ error: errorMsg })}\n\n`));
         } finally {
           controller.close();
           // Persist final assistant message

@@ -3,6 +3,8 @@
 // Each agent receives the user profile + retrieved research; outputs structured JSON via tool-calling.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { ChatOpenAI } from "npm:@langchain/openai";
+import { SystemMessage, HumanMessage } from "npm:@langchain/core/messages";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -35,33 +37,30 @@ function evidencePack(docs: any[]) {
 }
 
 async function callAgent(opts: { system: string; user: string | any[]; toolName: string; toolDesc: string; schema: any; model?: string }) {
-  const body = {
-    model: opts.model ?? LLM_MODEL,
-    messages: [
-      { role: "system", content: opts.system },
-      { role: "user", content: opts.user },
-    ],
-    tools: [{
-      type: "function",
-      function: { name: opts.toolName, description: opts.toolDesc, parameters: opts.schema },
-    }],
-    tool_choice: { type: "function", function: { name: opts.toolName } },
-  };
-  const res = await fetch(`${LLM_BASE_URL}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${LLM_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+  const llm = new ChatOpenAI({
+    apiKey: LLM_API_KEY,
+    configuration: { baseURL: LLM_BASE_URL },
+    modelName: opts.model ?? LLM_MODEL,
+    maxRetries: 2,
   });
-  if (!res.ok) {
-    const t = await res.text();
-    if (res.status === 429) throw new Error("RATE_LIMIT");
-    if (res.status === 402) throw new Error("CREDITS");
-    throw new Error(`agent ${opts.toolName} ${res.status}: ${t}`);
+
+  const structuredLlm = llm.withStructuredOutput(opts.schema, {
+    name: opts.toolName,
+  });
+
+  const messages = [
+    new SystemMessage(opts.system),
+    new HumanMessage({ content: opts.user as any }),
+  ];
+
+  try {
+    const result = await structuredLlm.invoke(messages);
+    return result;
+  } catch (e: any) {
+    if (e.status === 429) throw new Error("RATE_LIMIT");
+    if (e.status === 402) throw new Error("CREDITS");
+    throw new Error(`agent ${opts.toolName} failed: ${e.message || e}`);
   }
-  const json = await res.json();
-  const call = json.choices?.[0]?.message?.tool_calls?.[0];
-  if (!call) throw new Error(`no tool call from ${opts.toolName}`);
-  return JSON.parse(call.function.arguments);
 }
 
 const equipmentSchema = {
