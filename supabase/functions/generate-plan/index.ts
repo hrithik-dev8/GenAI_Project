@@ -3,6 +3,9 @@
 // Each agent receives the user profile + retrieved research; outputs structured JSON via tool-calling.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { ChatOpenAI, OpenAIEmbeddings } from "npm:@langchain/openai";
+import { SystemMessage, HumanMessage } from "npm:@langchain/core/messages";
+import { SupabaseVectorStore } from "npm:@langchain/community/vectorstores/supabase";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -15,11 +18,38 @@ const LLM_MODEL = Deno.env.get("LLM_MODEL") || "llama-3.3-70b-versatile";
 const LLM_VISION_MODEL = Deno.env.get("LLM_VISION_MODEL") || "llama-3.2-90b-vision-preview";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const EMBEDDING_API_KEY = Deno.env.get("OPENAI_API_KEY") || Deno.env.get("EMBEDDING_API_KEY") || Deno.env.get("LLM_API_KEY")!;
+const EMBEDDING_MODEL = Deno.env.get("EMBEDDING_MODEL") || "text-embedding-3-small";
 
 async function retrieve(supabase: any, query: string, k = 6) {
-  const { data, error } = await supabase.rpc("match_research_text", { query_text: query, match_count: k, topic_filter: null });
-  if (error) { console.error("rpc match_research_text", error); return []; }
-  return data ?? [];
+  try {
+    const embeddings = new OpenAIEmbeddings({
+      apiKey: EMBEDDING_API_KEY,
+      modelName: EMBEDDING_MODEL,
+    });
+
+    const vectorStore = new SupabaseVectorStore(embeddings, {
+      client: supabase,
+      tableName: "research_corpus",
+      queryName: "match_documents",
+    });
+
+    const results = await vectorStore.similaritySearchWithScore(query, k);
+    return results.map(([doc, score], idx) => ({
+      id: doc.metadata?.id ?? `doc-${idx}`,
+      title: doc.metadata?.title,
+      authors: doc.metadata?.authors,
+      year: doc.metadata?.year,
+      source: doc.metadata?.source,
+      url: doc.metadata?.url,
+      topic: doc.metadata?.topic,
+      content: doc.pageContent,
+      similarity: score
+    }));
+  } catch (error) {
+    console.error("vectorStore similaritySearch", error);
+    return [];
+  }
 }
 
 function citationsFromDocs(docs: any[]) {
@@ -35,33 +65,37 @@ function evidencePack(docs: any[]) {
 }
 
 async function callAgent(opts: { system: string; user: string | any[]; toolName: string; toolDesc: string; schema: any; model?: string }) {
-  const body = {
-    model: opts.model ?? LLM_MODEL,
-    messages: [
-      { role: "system", content: opts.system },
-      { role: "user", content: opts.user },
-    ],
+  const llm = new ChatOpenAI({
+    apiKey: LLM_API_KEY,
+    configuration: { baseURL: LLM_BASE_URL },
+    modelName: opts.model ?? LLM_MODEL,
+    maxRetries: 2,
+  });
+
+  // Use explicit tool binding instead of withStructuredOutput for Groq/Llama compatibility
+  const llmWithTools = llm.bind({
     tools: [{
-      type: "function",
+      type: "function" as const,
       function: { name: opts.toolName, description: opts.toolDesc, parameters: opts.schema },
     }],
-    tool_choice: { type: "function", function: { name: opts.toolName } },
-  };
-  const res = await fetch(`${LLM_BASE_URL}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${LLM_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    tool_choice: { type: "function" as const, function: { name: opts.toolName } },
   });
-  if (!res.ok) {
-    const t = await res.text();
-    if (res.status === 429) throw new Error("RATE_LIMIT");
-    if (res.status === 402) throw new Error("CREDITS");
-    throw new Error(`agent ${opts.toolName} ${res.status}: ${t}`);
+
+  const messages = [
+    new SystemMessage(opts.system),
+    new HumanMessage({ content: opts.user as any }),
+  ];
+
+  try {
+    const result = await llmWithTools.invoke(messages);
+    const toolCall = result.tool_calls?.[0];
+    if (!toolCall) throw new Error(`no tool call returned from ${opts.toolName}`);
+    return toolCall.args;
+  } catch (e: any) {
+    if (e.status === 429) throw new Error("RATE_LIMIT");
+    if (e.status === 402) throw new Error("CREDITS");
+    throw new Error(`agent ${opts.toolName} failed: ${e.message || e}`);
   }
-  const json = await res.json();
-  const call = json.choices?.[0]?.message?.tool_calls?.[0];
-  if (!call) throw new Error(`no tool call from ${opts.toolName}`);
-  return JSON.parse(call.function.arguments);
 }
 
 const equipmentSchema = {

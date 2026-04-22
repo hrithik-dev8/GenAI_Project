@@ -1,8 +1,10 @@
 // Seed the research_corpus with curated sports-science / nutrition abstracts.
 // Idempotent: only inserts rows when corpus is empty (or ?force=1 wipes & reseeds).
-// Retrieval uses Postgres full-text search (no embeddings needed).
+// Generates OpenAI embeddings for each document and stores them via SupabaseVectorStore.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { SupabaseVectorStore } from "npm:@langchain/community/vectorstores/supabase";
+import { OpenAIEmbeddings } from "npm:@langchain/openai";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -11,6 +13,8 @@ const corsHeaders = {
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const EMBEDDING_API_KEY = Deno.env.get("OPENAI_API_KEY") || Deno.env.get("EMBEDDING_API_KEY") || Deno.env.get("LLM_API_KEY")!;
+const EMBEDDING_MODEL = Deno.env.get("EMBEDDING_MODEL") || "text-embedding-3-small";
 
 type Doc = {
   title: string; authors: string; year: number; source: string; url: string;
@@ -135,18 +139,31 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Bulk insert — no embeddings needed; retrieval uses Postgres full-text search.
-    const rows = CORPUS.map(d => ({ ...d }));
-    const { error, count: inserted } = await supabase
-      .from("research_corpus")
-      .insert(rows, { count: "exact" });
-    if (error) {
-      console.error("bulk insert", error);
-      return new Response(JSON.stringify({ error: error.message }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-    return new Response(JSON.stringify({ ok: true, inserted: inserted ?? rows.length, total: CORPUS.length }), {
+    // Build LangChain documents and generate embeddings via OpenAI, then insert into vector store.
+    const documents = CORPUS.map(d => ({
+      pageContent: chunkContent(d),
+      metadata: {
+        title: d.title,
+        authors: d.authors,
+        year: d.year,
+        source: d.source,
+        url: d.url,
+        topic: d.topic,
+      }
+    }));
+
+    const embeddings = new OpenAIEmbeddings({
+      apiKey: EMBEDDING_API_KEY,
+      modelName: EMBEDDING_MODEL,
+    });
+
+    await SupabaseVectorStore.fromDocuments(documents, embeddings, {
+      client: supabase,
+      tableName: "research_corpus",
+      queryName: "match_documents",
+    });
+
+    return new Response(JSON.stringify({ ok: true, inserted: documents.length, total: CORPUS.length }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
