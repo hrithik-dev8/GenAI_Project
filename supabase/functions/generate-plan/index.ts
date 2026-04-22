@@ -3,8 +3,9 @@
 // Each agent receives the user profile + retrieved research; outputs structured JSON via tool-calling.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { ChatOpenAI } from "npm:@langchain/openai";
+import { ChatOpenAI, OpenAIEmbeddings } from "npm:@langchain/openai";
 import { SystemMessage, HumanMessage } from "npm:@langchain/core/messages";
+import { SupabaseVectorStore } from "npm:@langchain/community/vectorstores/supabase";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -17,11 +18,38 @@ const LLM_MODEL = Deno.env.get("LLM_MODEL") || "llama-3.3-70b-versatile";
 const LLM_VISION_MODEL = Deno.env.get("LLM_VISION_MODEL") || "llama-3.2-90b-vision-preview";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const EMBEDDING_API_KEY = Deno.env.get("OPENAI_API_KEY") || Deno.env.get("EMBEDDING_API_KEY") || Deno.env.get("LLM_API_KEY")!;
+const EMBEDDING_MODEL = Deno.env.get("EMBEDDING_MODEL") || "text-embedding-3-small";
 
 async function retrieve(supabase: any, query: string, k = 6) {
-  const { data, error } = await supabase.rpc("match_research_text", { query_text: query, match_count: k, topic_filter: null });
-  if (error) { console.error("rpc match_research_text", error); return []; }
-  return data ?? [];
+  try {
+    const embeddings = new OpenAIEmbeddings({
+      apiKey: EMBEDDING_API_KEY,
+      modelName: EMBEDDING_MODEL,
+    });
+
+    const vectorStore = new SupabaseVectorStore(embeddings, {
+      client: supabase,
+      tableName: "research_corpus",
+      queryName: "match_documents",
+    });
+
+    const results = await vectorStore.similaritySearchWithScore(query, k);
+    return results.map(([doc, score], idx) => ({
+      id: doc.metadata?.id ?? `doc-${idx}`,
+      title: doc.metadata?.title,
+      authors: doc.metadata?.authors,
+      year: doc.metadata?.year,
+      source: doc.metadata?.source,
+      url: doc.metadata?.url,
+      topic: doc.metadata?.topic,
+      content: doc.pageContent,
+      similarity: score
+    }));
+  } catch (error) {
+    console.error("vectorStore similaritySearch", error);
+    return [];
+  }
 }
 
 function citationsFromDocs(docs: any[]) {
@@ -44,8 +72,13 @@ async function callAgent(opts: { system: string; user: string | any[]; toolName:
     maxRetries: 2,
   });
 
-  const structuredLlm = llm.withStructuredOutput(opts.schema, {
-    name: opts.toolName,
+  // Use explicit tool binding instead of withStructuredOutput for Groq/Llama compatibility
+  const llmWithTools = llm.bind({
+    tools: [{
+      type: "function" as const,
+      function: { name: opts.toolName, description: opts.toolDesc, parameters: opts.schema },
+    }],
+    tool_choice: { type: "function" as const, function: { name: opts.toolName } },
   });
 
   const messages = [
@@ -54,8 +87,10 @@ async function callAgent(opts: { system: string; user: string | any[]; toolName:
   ];
 
   try {
-    const result = await structuredLlm.invoke(messages);
-    return result;
+    const result = await llmWithTools.invoke(messages);
+    const toolCall = result.tool_calls?.[0];
+    if (!toolCall) throw new Error(`no tool call returned from ${opts.toolName}`);
+    return toolCall.args;
   } catch (e: any) {
     if (e.status === 429) throw new Error("RATE_LIMIT");
     if (e.status === 402) throw new Error("CREDITS");

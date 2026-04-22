@@ -5,8 +5,9 @@
 // 4) Persist user + assistant messages to DB.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { ChatOpenAI } from "npm:@langchain/openai";
+import { ChatOpenAI, OpenAIEmbeddings } from "npm:@langchain/openai";
 import { SystemMessage, HumanMessage, AIMessage } from "npm:@langchain/core/messages";
+import { SupabaseVectorStore } from "npm:@langchain/community/vectorstores/supabase";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -18,6 +19,8 @@ const LLM_BASE_URL = Deno.env.get("LLM_BASE_URL") || "https://api.groq.com/opena
 const LLM_MODEL = Deno.env.get("LLM_MODEL") || "llama-3.3-70b-versatile";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const EMBEDDING_API_KEY = Deno.env.get("OPENAI_API_KEY") || Deno.env.get("EMBEDDING_API_KEY") || Deno.env.get("LLM_API_KEY")!;
+const EMBEDDING_MODEL = Deno.env.get("EMBEDDING_MODEL") || "text-embedding-3-small";
 
 // ----- Guardrails -----
 const INJECTION_PATTERNS = [
@@ -51,7 +54,7 @@ function sanitize(input: string): string {
     .slice(0, 4000);
 }
 
-// (no embeddings — keyword retrieval via Postgres full-text search)
+// Retrieval via vector embedding similarity (SupabaseVectorStore + OpenAIEmbeddings)
 
 function streamPlainText(text: string): Response {
   // Emit a single OpenAI-compatible SSE event then [DONE], so the frontend parser handles it uniformly.
@@ -117,10 +120,31 @@ Deno.serve(async (req) => {
     const recent = (history ?? []).slice(-12);
 
     // Retrieve evidence
+    const embeddings = new OpenAIEmbeddings({
+      apiKey: EMBEDDING_API_KEY,
+      modelName: EMBEDDING_MODEL,
+    });
+
+    const vectorStore = new SupabaseVectorStore(embeddings, {
+      client: admin,
+      tableName: "research_corpus",
+      queryName: "match_documents",
+    });
+
     const docs = (await (async () => {
       try {
-        const { data } = await admin.rpc("match_research_text", { query_text: cleaned, match_count: 5, topic_filter: null });
-        return data ?? [];
+        const results = await vectorStore.similaritySearchWithScore(cleaned, 5);
+        return results.map(([doc, score], idx) => ({
+          id: doc.metadata?.id ?? `doc-${idx}`,
+          title: doc.metadata?.title,
+          authors: doc.metadata?.authors,
+          year: doc.metadata?.year,
+          source: doc.metadata?.source,
+          url: doc.metadata?.url,
+          topic: doc.metadata?.topic,
+          content: doc.pageContent,
+          similarity: score
+        }));
       } catch (e) { console.error("retrieve fail", e); return []; }
     })());
 
