@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* EvidenceFit — Clinical Trust design system */
+
+@layer base {
+  :root {
+    /* Core palette */
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    /* Deep navy primary */
+    --primary: 218 75% 15%;
+    --primary-foreground: 210 40% 98%;
+    --primary-glow: 212 60% 35%;
+
+    /* Steel blue accent */
+    --accent: 211 56% 43%;
+    --accent-foreground: 210 40% 98%;
+
+    --secondary: 215 28% 94%;
+    --secondary-foreground: 218 75% 15%;
+
+    --muted: 215 25% 92%;
+    --muted-foreground: 215 16% 40%;
+
+    --destructive: 0 72% 45%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 215 25% 88%;
+    --input: 215 25% 88%;
+    --ring: 211 56% 43%;
+
+    --radius: 0.625rem;
+
+    /* Domain tokens */
+    --evidence: 162 60% 32%;            /* citation badge */
+    --evidence-foreground: 210 40% 98%;
+    --warning: 38 92% 50%;
+
+    --gradient-hero: linear-gradient(135deg, hsl(218 75% 12%) 0%, hsl(211 56% 28%) 50%, hsl(193 70% 38%) 100%);
+    --gradient-card: linear-gradient(160deg, hsl(0 0% 100%) 0%, hsl(215 28% 96%) 100%);
+    --gradient-accent: linear-gradient(135deg, hsl(211 56% 43%) 0%, hsl(193 70% 48%) 100%);
+
+    --shadow-elegant: 0 20px 50px -20px hsl(218 75% 15% / 0.25);
+    --shadow-soft: 0 4px 20px -8px hsl(218 50% 20% / 0.12);
+    --shadow-glow: 0 0 60px hsl(211 70% 55% / 0.35);
+
+    --transition-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+
+    --sidebar-background: 218 75% 15%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-primary: 211 56% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 218 50% 22%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 218 50% 25%;
+    --sidebar-ring: 211 70% 55%;
+  }
+
+  .dark {
+    --background: 218 50% 8%;
+    --foreground: 210 40% 96%;
+    --card: 218 45% 11%;
+    --card-foreground: 210 40% 96%;
+    --popover: 218 45% 11%;
+    --popover-foreground: 210 40% 96%;
+    --primary: 211 70% 55%;
+    --primary-foreground: 218 75% 10%;
+    --secondary: 218 40% 16%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 218 40% 16%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 193 70% 48%;
+    --accent-foreground: 218 75% 10%;
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 210 40% 96%;
+    --border: 218 40% 20%;
+    --input: 218 40% 20%;
+    --ring: 211 70% 55%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  html { font-feature-settings: "ss01", "cv11"; }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+  h1,h2,h3,h4 {
+    font-family: 'Instrument Serif', 'Times New Roman', serif;
+    @apply tracking-tight;
+    font-weight: 400;
+  }
+}
+
+@layer components {
+  .hero-gradient { background: var(--gradient-hero); }
+  .accent-gradient { background: var(--gradient-accent); }
+  .card-gradient { background: var(--gradient-card); }
+  .evidence-chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
+    background: hsl(var(--evidence) / 0.12);
+    color: hsl(var(--evidence));
+    border: 1px solid hsl(var(--evidence) / 0.25);
+  }
+  .glass {
+    background: hsl(0 0% 100% / 0.7);
+    backdrop-filter: blur(12px);
+    border: 1px solid hsl(215 25% 88% / 0.6);
+  }
+}
