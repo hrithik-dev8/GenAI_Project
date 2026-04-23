@@ -33,7 +33,7 @@ On the tech side, the website itself is React with TypeScript. Everything behind
 
 
 
-Netra Uchil - M01089309
+# Netra Uchil - M01089309
 
 EvidenceFit is a fitness app that you can access on your computer to help you achieve your fitness goals. You can start by entering your details such as your biodata (age, height, weight, etc.), what your goal is (lose weight, gain muscle), and then finally what are your diet preferences. This will allow the app to generate a workout plan and a diet plan for you to follow. We have an option where you can also add your available gym equipment to help us generate the workout more catered to you. The main concept of the app is that everything the app generates is backed by scientific research papers.
 
